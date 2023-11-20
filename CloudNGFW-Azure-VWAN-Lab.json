@@ -1,0 +1,569 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "comments": "Creating Azure VWAN infrastructure with spoke vnets",
+        "author": "Ravisankar Pegada (rpegada@paloaltonetworks.com)"
+    },
+    "parameters": {
+        "ubuntuOSVersion": {
+            "type": "string",
+            "defaultValue": "18.04-LTS",
+            "allowedValues": [
+              "18.04-LTS",
+              "16.04.0-LTS",
+              "14.04.5-LTS"
+            ],
+            "metadata": {
+              "description": "The Ubuntu version for the VM. This will pick a fully patched image of this given Ubuntu version. Allowed values: 18.04-LTS, 16.04.0-LTS, 14.04.5-LTS."
+            }
+          },
+          "vmSize": {
+            "type": "string",
+            "metadata": {
+              "description": "Size of the virtual machine"
+            },
+            "defaultValue": "Standard_B1s"
+          }
+    },
+    "variables": {
+
+        "var_resource_group": "[resourceGroup().name]",
+        "var_idleTimeoutInMinutes": 4,
+        "var_apiVersion": "2018-06-01",
+
+        "nsg_name_spoke_subnets": "spoke-subnets-nsg",
+        "nsg_hub_subnets_inbound_rule_name": "allow-inbound-ports",
+        "nsg_hub_subnets_inbound_rule_sourceAddress": "0.0.0.0/0",
+        "nsg_hub_subnets_inbound_rule_ports": [
+            "22",
+            "443",
+			"3306",
+			"8080",
+			"80",
+			"221"
+        ],
+        "nsg_hub_subnets_outbound_rule_name": "allow-outbound-ports",
+        "nsg_hub_subnets_outbound_rule_sourceAddress": "0.0.0.0/0",
+        "nsg_hub_subnets_outbound_rule_ports": [
+            "22",
+            "443",
+			"3306",
+			"8080",
+			"80",
+			"221"
+        ],
+		
+        
+        "hub_vnet_name": "hub-vnet",
+		"hub_private_subnet_name": "hub-private-subnet",
+		"hub_public_subnet_name": "hub-public-subnet",
+
+		
+		"spoke1_vnet_name": "spoke1-vnet",
+		"spoke2_vnet_name": "spoke2-vnet",
+        "spoke1_subnet_name": "web-subnet",
+        "spoke2_subnet_name": "db-subnet",
+		
+        "spoke1_vnet_cidr": "10.5.0.0/16",
+        "spoke1_subnet_cidr": "10.5.0.0/24",
+		
+		"spoke2_vnet_cidr": "10.6.0.0/16",
+        "spoke2_subnet_cidr": "10.6.0.0/24",
+
+		"hub_vnet_cidr": "10.7.0.0/16",
+		"hub_public_subnet_cidr": "10.7.1.0/24",
+		"hub_private_subnet_cidr": "10.7.2.0/24",
+		
+		"cnfgw_Private_ip": "10.7.2.4",
+		         
+        "vm_vmSize": "Standard_A1_v2",
+        "vm_publisher": "Canonical",
+        "vm_offer": "UbuntuServer",
+        "vm_sku": "18.04-LTS",
+        "vm_version": "latest",
+        "vm_osType": "Linux",
+        "vm_diskSizeGB": "30",
+        "vm_diskType": "Standard_LRS",
+		
+        "vm1_name": "webserver-vm",
+        "vm1_nic_name": "[concat(variables('vm1_name'), '-nic0')]",
+        "vm1_nic_ip": "10.5.0.5",
+		
+        "vm2_name": "database-vm",
+        "vm2_nic_name": "[concat(variables('vm2_name'), '-nic0')]",
+        "vm2_nic_ip": "10.6.0.5",
+		
+		"spoke_enableAcceleratedNetworking": "false",
+		
+		"spoke_adminUsername": "paloalto",
+        "spoke_adminPassword": "Pal0Alt0@123",
+        
+        "rt_name": "vm-route-table",
+        "rt_route0_name": "default-udr",
+        "rt_route1_name": "web-udr",
+        "rt_route2_name": "db-udr",
+		
+		"LogAnalytics_Workspace_name": "CloudNGFW-Logs",
+
+      
+        "inbound_pip_name": "frontendip",
+        "spoke1_pip_name": "webserverpip",
+        "spoke2_pip_name": "dbserverpip",
+
+		"Spoke1VnetToHubVnetPeeringName":"[concat(variables('spoke1_vnet_name'),'/ToHubVnet')]",
+        "HubVnetToSpoke1PeeringName": "[concat(variables('hub_vnet_name'),'/ToSpoke1Vnet')]",
+		"Spoke2VnetToHubVnetPeeringName":"[concat(variables('spoke2_vnet_name'),'/ToHubVnet')]",
+        "HubVnetToSpoke2PeeringName": "[concat(variables('hub_vnet_name'),'/ToSpoke2Vnet')]",
+
+        "imagePublisher": "Canonical",
+        "imageOffer": "UbuntuServer"
+    },
+    "resources": [  
+        {
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "name": "[variables('nsg_name_spoke_subnets')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "[variables('nsg_hub_subnets_inbound_rule_name')]",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "sourceAddressPrefix": "[variables('nsg_hub_subnets_inbound_rule_sourceAddress')]",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": "100",
+                            "direction": "Inbound",
+                            "sourcePortRanges": [],
+                            "destinationPortRanges": "[variables('nsg_hub_subnets_inbound_rule_ports')]",
+                            "sourceAddressPrefixes": [],
+                            "destinationAddressPrefixes": []
+                        }
+                    },
+					{
+                        "name": "[variables('nsg_hub_subnets_outbound_rule_name')]",
+                        "properties": {
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "*",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": "100",
+                            "direction": "Outbound",
+                            "sourcePortRanges": [],
+                            "destinationPortRanges": [],
+                            "sourceAddressPrefixes": [],
+                            "destinationAddressPrefixes": []
+                        }
+                    }
+                ]
+            }
+        },
+		{
+            "type": "Microsoft.Network/publicIPAddresses",
+            "sku": {
+                "name": "Standard",
+                "tier": "Regional"
+            },
+            "name": "[variables('inbound_pip_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAddressVersion": "IPv4",
+                "publicIPAllocationMethod": "Static",
+                "idleTimeoutInMinutes": "[variables('var_idleTimeoutInMinutes')]"
+            }
+        },
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "sku": {
+                "name": "Standard",
+                "tier": "Regional"
+            },
+            "name": "[variables('spoke1_pip_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAddressVersion": "IPv4",
+                "publicIPAllocationMethod": "Static",
+                "idleTimeoutInMinutes": "[variables('var_idleTimeoutInMinutes')]"
+            }
+        },
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "sku": {
+                "name": "Standard",
+                "tier": "Regional"
+            },
+            "name": "[variables('spoke2_pip_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAddressVersion": "IPv4",
+                "publicIPAllocationMethod": "Static",
+                "idleTimeoutInMinutes": "[variables('var_idleTimeoutInMinutes')]"
+            }
+        },
+		{
+            "type": "Microsoft.Network/virtualNetworks", 
+            "name": "[variables('spoke1_vnet_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[variables('spoke1_vnet_cidr')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('spoke1_subnet_name')]",
+                        "properties": {
+                            "addressPrefix": "[variables('spoke1_subnet_cidr')]",
+							"networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsg_name_spoke_subnets'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+		{
+            "type": "Microsoft.Network/virtualNetworks", 
+            "name": "[variables('spoke2_vnet_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[variables('spoke2_vnet_cidr')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('spoke2_subnet_name')]",
+                        "properties": {
+                            "addressPrefix": "[variables('spoke2_subnet_cidr')]",
+							"networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsg_name_spoke_subnets'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+
+        },
+		{
+            "comments": "CREATE_vm1_NIC",
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[variables('vm1_nic_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIpAddress": "[variables('vm1_nic_ip')]",
+                            "privateIPAllocationMethod": "Static",
+                            "subnet": {
+                                "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', variables('spoke1_vnet_name')), '/subnets/', variables('spoke1_subnet_name'))]"
+                            },
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('spoke1_pip_name'))]"
+                              },
+                            "primary": true,
+                            "privateIPAddressVersion": "IPv4"
+                        }
+                    }
+                ],
+                "enableAcceleratedNetworking": "[variables('spoke_enableAcceleratedNetworking')]",
+                "enableIPForwarding": false
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('spoke1_vnet_name'))]"
+            ]
+        },
+        {
+            "comments": "CREATE_WEB_VM",
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[variables('vm1_name')]",
+            "apiVersion": "2020-06-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces/', variables('vm1_nic_name'))]"
+              ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[parameters('vmSize')]"
+                  },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[parameters('ubuntuOSVersion')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[concat(variables('vm1_name'),'_OSDisk')]",
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                      }
+                },
+                "osProfile": {
+                    "computerName": "[variables('vm1_name')]",
+                    "adminUsername": "[variables('spoke_adminUsername')]",
+                    "adminPassword": "[variables('spoke_adminPassword')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false,
+                        "provisionVMAgent": true
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('vm1_nic_name'))]",
+                            "properties": {
+                                "primary": true
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+		{
+		  "type": "Microsoft.Compute/virtualMachines/extensions",
+		  "name": "[concat(variables('vm1_name'),'/installcustomscript')]",
+		  "location": "[resourceGroup().location]",
+		  "apiVersion": "2020-12-01",
+		  "dependsOn": [
+			"[concat('Microsoft.Compute/virtualMachines/', variables('vm1_name'))]"
+			],
+		  "tags": {
+			"displayName": "config-app"
+			},
+		  "properties": {
+			"publisher": "Microsoft.Azure.Extensions",
+			"type": "CustomScript",
+			"typeHandlerVersion": "2.1",
+			"autoUpgradeMinorVersion": true,
+			"settings": {
+				"skipDos2Unix":false,
+				"timestamp":123456789,
+			  "fileUris": ["https://raw.githubusercontent.com/ravipegada/CloudNGFW-ARM-Resources/main/WebServerInit.sh"],
+			  "commandToExecute": "sh WebServerInit.sh"
+			}
+		  }
+		},
+        {
+            "comments": "CREATE_vm2_NIC",
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[variables('vm2_nic_name')]",
+            "apiVersion": "[variables('var_apiVersion')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIpAddress": "[variables('vm2_nic_ip')]",
+                            "privateIPAllocationMethod": "Static",
+                            "subnet": {
+                                "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', variables('spoke2_vnet_name')), '/subnets/', variables('spoke2_subnet_name'))]"
+                            },
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('spoke2_pip_name'))]"
+                              },
+                            "primary": true,
+                            "privateIPAddressVersion": "IPv4"
+                        }
+                    }
+                ],
+                "enableAcceleratedNetworking": "[variables('spoke_enableAcceleratedNetworking')]",
+                "enableIPForwarding": false
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('spoke2_vnet_name'))]"
+            ]
+        },
+        {
+            "comments": "CREATE_DB_VM",
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[variables('vm2_name')]",
+            "apiVersion": "2020-06-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces/', variables('vm2_nic_name'))]"
+              ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[parameters('vmSize')]"
+                  },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[parameters('ubuntuOSVersion')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[concat(variables('vm2_name'),'_OSDisk')]",
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                      }
+                },
+                "osProfile": {
+                    "computerName": "[variables('vm2_name')]",
+                    "adminUsername": "[variables('spoke_adminUsername')]",
+                    "adminPassword": "[variables('spoke_adminPassword')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false,
+                        "provisionVMAgent": true
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('vm2_nic_name'))]",
+                            "properties": {
+                                "primary": true
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+				{
+		  "type": "Microsoft.Compute/virtualMachines/extensions",
+		  "name": "[concat(variables('vm2_name'),'/installcustomscript')]",
+		  "location": "[resourceGroup().location]",
+		  "apiVersion": "2020-12-01",
+		  "dependsOn": [
+			"[concat('Microsoft.Compute/virtualMachines/', variables('vm2_name'))]"
+			],
+		  "tags": {
+			"displayName": "config-app"
+			},
+		  "properties": {
+			"publisher": "Microsoft.Azure.Extensions",
+			"type": "CustomScript",
+			"typeHandlerVersion": "2.1",
+			"autoUpgradeMinorVersion": true,
+			"settings": {
+				"skipDos2Unix":false,
+				"timestamp":123456789,
+			  "fileUris": ["https://raw.githubusercontent.com/ravipegada/CloudNGFW-ARM-Resources/main/MySQLServerInit.sh"],
+			  "commandToExecute": "sh MySQLServerInit.sh"
+			}
+		  }
+		},
+
+		{
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "apiVersion": "2021-12-01-preview",
+			"name": "[variables('LogAnalytics_Workspace_name')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "sku": {
+                    "name": "pergb2018"
+                },
+                "retentionInDays": 30,
+                "features": {
+                    "enableLogAccessUsingOnlyResourcePermissions": true
+                },
+                "workspaceCapping": {
+                    "dailyQuotaGb": -1
+                },
+                "publicNetworkAccessForIngestion": "Enabled",
+                "publicNetworkAccessForQuery": "Enabled"
+            }
+        },
+        {
+            "type": "Microsoft.Network/virtualWans",
+            "apiVersion": "2019-08-01",
+            "name": "CNGFW-Demo-VWAN",
+            "location": "[resourceGroup().location]",
+            "properties": {
+              "disableVpnEncryption": false,
+              "allowBranchToBranchTraffic": true,
+              "allowVnetToVnetTraffic": false,
+              "office365LocalBreakoutCategory": "None",
+              "type": "Standard"
+            }
+          },
+          {
+            "type": "Microsoft.Network/virtualHubs",
+            "apiVersion": "2020-04-01",
+            "name": "CNGFW-Demo-VWAN-Hub01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+              "[resourceId('Microsoft.Network/virtualWans', 'CNGFW-Demo-VWAN')]"
+            ],
+            "properties": {
+              "virtualNetworkConnections": [
+                {
+                  "name": "hub01-spoke01",
+                  "properties": {
+                    "remoteVirtualNetwork": {
+                      "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('spoke1_vnet_name'))]"
+                    },
+                    "allowHubToRemoteVnetTransit": true,
+                    "allowRemoteVnetToUseHubVnetGateways": false,
+                    "enableInternetSecurity": true
+                  }
+                },
+                {
+                    "name": "hub01-spoke02",
+                    "properties": {
+                      "remoteVirtualNetwork": {
+                        "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('spoke2_vnet_name'))]"
+                      },
+                      "allowHubToRemoteVnetTransit": true,
+                      "allowRemoteVnetToUseHubVnetGateways": false,
+                      "enableInternetSecurity": true
+                    }
+                  }
+                ],
+                "addressPrefix": "10.210.0.0/24",
+                "virtualWan": {
+                  "id": "[resourceId('Microsoft.Network/virtualWans', 'CNGFW-Demo-VWAN')]"
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "web-server-url": {
+            "value" : "[concat('http://', reference(variables('inbound_pip_name')).ipAddress)]",
+            "type": "string"
+        },
+        "web-server-url-wordpress": {
+            "value" : "[concat('http://', reference(variables('inbound_pip_name')).ipAddress, '/wordpress')]",
+            "type": "string"
+        },
+        "web-server-url-sql-attack": {
+            "value" : "[concat('http://', reference(variables('inbound_pip_name')).ipAddress, '/sql-attack.html')]",
+            "type": "string"
+        },
+        "ssh-web-vm": {
+            "value" : "[concat('ssh paloalto@', reference(variables('inbound_pip_name')).ipAddress, ' -p 221')]",
+            "type": "string"
+        },
+		"USERNAME": {
+            "value" : "[variables('spoke_adminUsername')]",
+            "type": "string"
+        },
+        "PASSWORD": {
+            "value" : "[variables('spoke_adminPassword')]",
+            "type": "string"
+        },
+		"Frontend-IP": {
+            "value" : "[reference(variables('inbound_pip_name')).ipAddress]",
+            "type": "string"
+        }
+		
+    }
+}
