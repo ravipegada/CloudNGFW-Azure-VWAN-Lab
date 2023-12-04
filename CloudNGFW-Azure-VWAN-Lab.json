@@ -230,7 +230,10 @@
                         }
                     }
                 ]
-            }
+            },
+			"dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsg_name_spoke_subnets'))]"
+            ]
         },
 		{
             "type": "Microsoft.Network/virtualNetworks", 
@@ -254,8 +257,10 @@
                         }
                     }
                 ]
-            }
-
+            },
+			"dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsg_name_spoke_subnets'))]"
+            ]
         },
 		{
             "comments": "CREATE_vm1_NIC",
